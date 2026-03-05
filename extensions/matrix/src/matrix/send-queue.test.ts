@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_SEND_GAP_MS, enqueueSend } from "./send-queue.js";
+import {
+  DEFAULT_SEND_GAP_MS,
+  MAX_RATE_LIMIT_RETRIES,
+  enqueueSend,
+  extractRateLimitMs,
+} from "./send-queue.js";
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -10,6 +15,34 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+describe("extractRateLimitMs", () => {
+  it("extracts retry_after_ms from SDK-style error", () => {
+    const err = { statusCode: 429, body: { errcode: "M_LIMIT_EXCEEDED", retry_after_ms: 1120 } };
+    expect(extractRateLimitMs(err)).toBe(1120);
+  });
+
+  it("extracts retry_after_ms from flat error", () => {
+    const err = { errcode: "M_LIMIT_EXCEEDED", retry_after_ms: 500 };
+    expect(extractRateLimitMs(err)).toBe(500);
+  });
+
+  it("returns default when retry_after_ms missing", () => {
+    const err = { statusCode: 429, body: { errcode: "M_LIMIT_EXCEEDED" } };
+    expect(extractRateLimitMs(err)).toBe(2000);
+  });
+
+  it("clamps excessive retry_after_ms to max", () => {
+    const err = { statusCode: 429, body: { errcode: "M_LIMIT_EXCEEDED", retry_after_ms: 120_000 } };
+    expect(extractRateLimitMs(err)).toBe(30_000);
+  });
+
+  it("returns null for non-rate-limit errors", () => {
+    expect(extractRateLimitMs(new Error("network"))).toBeNull();
+    expect(extractRateLimitMs(null)).toBeNull();
+    expect(extractRateLimitMs({ statusCode: 404, body: { errcode: "M_NOT_FOUND" } })).toBeNull();
+  });
+});
 
 describe("enqueueSend", () => {
   beforeEach(() => {
@@ -121,6 +154,79 @@ describe("enqueueSend", () => {
     await vi.advanceTimersByTimeAsync(DEFAULT_SEND_GAP_MS);
     await expect(second).resolves.toBe("two");
     expect(events).toEqual(["start1", "start2"]);
+  });
+
+  it("retries on M_LIMIT_EXCEEDED and succeeds", async () => {
+    let attempt = 0;
+    const delayFn = vi.fn(async (_ms: number) => {});
+
+    const result = enqueueSend(
+      "!room:example.org",
+      async () => {
+        attempt++;
+        if (attempt === 1) {
+          throw { statusCode: 429, body: { errcode: "M_LIMIT_EXCEEDED", retry_after_ms: 1120 } };
+        }
+        return "ok";
+      },
+      { delayFn },
+    );
+
+    await expect(result).resolves.toBe("ok");
+    expect(attempt).toBe(2);
+    // gap delay + retry_after_ms delay
+    expect(delayFn).toHaveBeenCalledTimes(2);
+    expect(delayFn).toHaveBeenNthCalledWith(1, DEFAULT_SEND_GAP_MS);
+    expect(delayFn).toHaveBeenNthCalledWith(2, 1120);
+  });
+
+  it("throws after exhausting rate-limit retries", async () => {
+    const rateLimitErr = {
+      statusCode: 429,
+      body: { errcode: "M_LIMIT_EXCEEDED", retry_after_ms: 500 },
+    };
+    let attempts = 0;
+    const delayFn = vi.fn(async (_ms: number) => {});
+
+    const result = enqueueSend(
+      "!room:example.org",
+      async () => {
+        attempts++;
+        throw rateLimitErr;
+      },
+      { delayFn },
+    ).then(
+      () => ({ ok: true as const }),
+      (error) => ({ ok: false as const, error }),
+    );
+
+    const outcome = await result;
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.error).toBe(rateLimitErr);
+    }
+    expect(attempts).toBe(MAX_RATE_LIMIT_RETRIES + 1);
+  });
+
+  it("does not retry non-rate-limit errors", async () => {
+    let attempts = 0;
+    const delayFn = vi.fn(async (_ms: number) => {});
+
+    const result = enqueueSend(
+      "!room:example.org",
+      async () => {
+        attempts++;
+        throw new Error("network failure");
+      },
+      { delayFn },
+    ).then(
+      () => ({ ok: true as const }),
+      (error) => ({ ok: false as const, error }),
+    );
+
+    const outcome = await result;
+    expect(outcome.ok).toBe(false);
+    expect(attempts).toBe(1);
   });
 
   it("supports custom gap and delay injection", async () => {
