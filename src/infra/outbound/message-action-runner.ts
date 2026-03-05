@@ -281,6 +281,7 @@ type ResolvedActionContext = {
   gateway?: MessageActionRunnerGateway;
   input: RunMessageActionParams;
   agentId?: string;
+  mediaLocalRoots?: readonly string[];
   resolvedTarget?: ResolvedMessagingTarget;
   abortSignal?: AbortSignal;
 };
@@ -672,6 +673,7 @@ async function handlePluginAction(ctx: ResolvedActionContext): Promise<MessageAc
     action,
     cfg,
     params,
+    mediaLocalRoots: ctx.mediaLocalRoots,
     accountId: accountId ?? undefined,
     requesterSenderId: input.requesterSenderId ?? undefined,
     gateway,
@@ -804,6 +806,7 @@ export async function runMessageAction(
     dryRun,
     gateway,
     input,
+    mediaLocalRoots,
     abortSignal: input.abortSignal,
   });
 }

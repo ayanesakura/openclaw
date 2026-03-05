@@ -1081,3 +1081,62 @@ describe("runMessageAction accountId defaults", () => {
     expect(ctx.params.accountId).toBe("account-b");
   });
 });
+
+describe("runMessageAction propagates mediaLocalRoots to plugin actions", () => {
+  const handleAction = vi.fn(async () => jsonResult({ ok: true }));
+  const pluginWithCustomAction: ChannelPlugin = {
+    id: "testchan",
+    meta: {
+      id: "testchan",
+      label: "Test Channel",
+      selectionLabel: "Test Channel",
+      docsPath: "/channels/testchan",
+      blurb: "Test channel for mediaLocalRoots propagation.",
+    },
+    capabilities: { chatTypes: ["direct"] },
+    config: createAlwaysConfiguredPluginConfig(),
+    actions: {
+      listActions: () => ["sendAttachment"],
+      supportsAction: ({ action }) => action === "sendAttachment",
+      handleAction,
+    },
+  };
+
+  beforeEach(() => {
+    setActivePluginRegistry(
+      createTestRegistry([
+        {
+          pluginId: "testchan",
+          source: "test",
+          plugin: pluginWithCustomAction,
+        },
+      ]),
+    );
+    handleAction.mockClear();
+  });
+
+  afterEach(() => {
+    setActivePluginRegistry(createTestRegistry([]));
+    vi.clearAllMocks();
+  });
+
+  it("passes mediaLocalRoots to dispatchChannelMessageAction for plugin actions", async () => {
+    await runMessageAction({
+      cfg: {} as OpenClawConfig,
+      action: "sendAttachment",
+      params: {
+        channel: "testchan",
+        target: "user:123",
+      },
+    });
+
+    expect(handleAction).toHaveBeenCalled();
+    const ctx = (handleAction.mock.calls as unknown as Array<[unknown]>)[0]?.[0] as
+      | { mediaLocalRoots?: readonly string[] }
+      | undefined;
+    if (!ctx) {
+      throw new Error("expected action context");
+    }
+    expect(ctx.mediaLocalRoots).toEqual(expect.any(Array));
+  });
+});
