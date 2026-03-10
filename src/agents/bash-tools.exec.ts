@@ -381,7 +381,10 @@ export function createExecTool(
           })
         : mergedEnv;
 
-      if (!sandbox && host === "gateway" && !params.env?.PATH) {
+      // The implicit sandbox default can still fall back to direct local execution when no
+      // sandbox runtime is available, so hydrate PATH from the login shell for both cases.
+      const shouldApplyLoginShellPath = !sandbox && host !== "node" && !params.env?.PATH;
+      if (shouldApplyLoginShellPath) {
         const shellPath = getShellPathFromLoginShell({
           env: process.env,
           timeoutMs: resolveShellEnvFallbackTimeoutMs(process.env),

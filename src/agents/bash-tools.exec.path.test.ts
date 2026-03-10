@@ -95,6 +95,24 @@ describe("exec PATH login shell merge", () => {
     expect(shellPathMock).toHaveBeenCalledTimes(1);
   });
 
+  it("merges login-shell PATH when implicit sandbox falls back to local execution", async () => {
+    if (isWin) {
+      return;
+    }
+    process.env.PATH = "/usr/bin";
+
+    const shellPathMock = vi.mocked(getShellPathFromLoginShell);
+    shellPathMock.mockClear();
+    shellPathMock.mockReturnValue("/custom/bin:/opt/bin");
+
+    const tool = createExecTool({ security: "full", ask: "off" });
+    const result = await tool.execute("call1", { command: "echo $PATH" });
+    const entries = normalizePathEntries(result.content.find((c) => c.type === "text")?.text);
+
+    expect(entries).toEqual(["/custom/bin", "/opt/bin", "/usr/bin"]);
+    expect(shellPathMock).toHaveBeenCalledTimes(1);
+  });
+
   it("sets OPENCLAW_SHELL for host=gateway commands", async () => {
     if (isWin) {
       return;
